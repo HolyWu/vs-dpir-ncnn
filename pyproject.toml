@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vsdpir_ncnn"
+version = "1.0.0"
+description = "DPIR function for VapourSynth"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "HolyWu", email = "holywu@gmail.com"}]
+keywords = ["DPIR", "ncnn", "VapourSynth", "Vulkan"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Multimedia :: Video"
+]
+dependencies = [
+  "numpy",
+  "requests",
+  "tqdm",
+  "VapourSynth>=55",
+  "vsutil"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/HolyWu/vs-dpir-ncnn"
+"Bug Tracker" = "https://github.com/HolyWu/vs-dpir-ncnn/issues"

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vsdpir_ncnn"
-version = "1.0.0"
+version = "2.0.0"
 description = "DPIR function for VapourSynth"
 readme = "README.md"
 requires-python = ">=3.10"

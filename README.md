@@ -22,9 +22,10 @@ python -m vsdpir_ncnn
 
 ## Usage
 ```python
-from vsdpir_ncnn import dpir
+from vsdpir_ncnn import DPIR
 
-ret = dpir(clip)
+dpir = DPIR(task='deblock')
+ret = dpir.run(clip, strength=25)
 ```
 
 See `__init__.py` for the description of the parameters.

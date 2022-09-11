@@ -11,113 +11,110 @@ from vsutil import fallback
 dir_name = osp.dirname(__file__)
 
 
-def dpir(
-    clip: vs.VideoNode,
-    strength: float | vs.VideoNode | None = None,
-    task: str = 'denoise',
-    tile_w: int = 0,
-    tile_h: int = 0,
-    tile_pad: int = 8,
-    gpu_id: int | None = None,
-    fp16: bool = True,
-) -> vs.VideoNode:
-    """
-    DPIR: Deep Plug-and-Play Image Restoration
+class DPIR:
+    """Deep Plug-and-Play Image Restoration"""
 
-    Parameters:
-        clip: Clip to process. Only RGB and GRAY formats with float sample type of 32 bit depth are supported.
+    def __init__(self, task: str = 'denoise', color: bool = True, gpu_id: int | None = None, fp16: bool = True) -> None:
+        """
+        :param task:    Task to perform. Must be 'deblock' or 'denoise'.
+        :param color:   Color model or gray model. Must match the format of the clip on which to be processed.
+        :param gpu_id:  The GPU ID.
+        :param fp16:    Enable FP16 mode.
+        """
+        if not hasattr(ncnn, 'get_gpu_count'):
+            raise vs.Error('DPIR: the installed ncnn Python package is not built with Vulkan compute support')
 
-        strength: Strength for deblocking/denoising. Defaults to 50.0 for 'deblock', 5.0 for 'denoise'.
-            Also accepts a GRAY8/GRAYS clip for varying strength.
+        assert ncnn.get_gpu_count() > 0
 
-        task: Task to perform. Must be 'deblock' or 'denoise'.
+        task = task.lower()
 
-        tile_w, tile_h: Tile width and height, respectively. As too large images result in the out of GPU memory issue,
-            so this tile option will first crop input images into tiles, and then process each of them.
-            Finally, they will be merged into one image. 0 denotes for do not use tile.
+        if task not in ['deblock', 'denoise']:
+            raise vs.Error("DPIR: task must be 'deblock' or 'denoise'")
 
-        tile_pad: The pad size for each tile, to remove border artifacts.
+        if gpu_id is not None and (gpu_id < 0 or gpu_id >= ncnn.get_gpu_count()):
+            raise vs.Error('DPIR: invalid GPU device')
 
-        gpu_id: The GPU ID.
+        if osp.getsize(osp.join(dir_name, 'drunet_color.bin')) == 0:
+            raise vs.Error("DPIR: model files have not been downloaded. run 'python -m vsdpir_ncnn' first")
 
-        fp16: Enable FP16 mode.
-    """
-    if not hasattr(ncnn, 'get_gpu_count'):
-        raise vs.Error('dpir: the installed ncnn Python package is not built with Vulkan compute support')
+        color_or_gray = 'color' if color else 'gray'
+        model_name = f'drunet_deblocking_{color_or_gray}' if task == 'deblock' else f'drunet_{color_or_gray}'
+        model_path = osp.join(dir_name, model_name)
 
-    assert ncnn.get_gpu_count() > 0
+        self.task = task
 
-    if not isinstance(clip, vs.VideoNode):
-        raise vs.Error('dpir: this is not a clip')
+        self.net = ncnn.Net()
+        self.net.opt.num_threads = 1
+        self.net.opt.use_fp16_packed = fp16
+        self.net.opt.use_fp16_storage = fp16
+        self.net.opt.use_vulkan_compute = True
+        self.net.set_vulkan_device(fallback(gpu_id, ncnn.get_default_gpu_index()))
+        self.net.load_param(model_path + '.param')
+        self.net.load_model(model_path + '.bin')
 
-    if clip.format.id not in [vs.RGBS, vs.GRAYS]:
-        raise vs.Error('dpir: only RGBS and GRAYS formats are supported')
+    def run(
+        self,
+        clip: vs.VideoNode,
+        strength: float | vs.VideoNode | None = None,
+        tile_w: int = 0,
+        tile_h: int = 0,
+        tile_pad: int = 8,
+    ) -> vs.VideoNode:
+        """
+        Compute the predictions.
 
-    if isinstance(strength, vs.VideoNode):
-        if strength.format.id not in [vs.GRAY8, vs.GRAYS]:
-            raise vs.Error('dpir: strength must be of GRAY8/GRAYS format')
+        :param clip:        Clip to process. Only RGBS and GRAYS formats are supported.
+        :param strength:    Strength for deblocking/denoising. Defaults to 50.0 for 'deblock', 5.0 for 'denoise'.
+                            Also accepts a GRAY8/GRAYS clip for varying strength.
+        :param tile_w:      Tile width. As too large images result in the out of GPU memory issue,
+                            so this tile option will first crop input images into tiles, and then process each of them.
+                            Finally, they will be merged into one image. 0 denotes for do not use tile.
+        :param tile_h:      Tile height.
+        :param tile_pad:    The pad size for each tile, to remove border artifacts.
+        """
+        if not isinstance(clip, vs.VideoNode):
+            raise vs.Error('DPIR: this is not a clip')
 
-        if strength.width != clip.width or strength.height != clip.height or strength.num_frames != clip.num_frames:
-            raise vs.Error('dpir: strength must have the same dimensions and number of frames as main clip')
+        if clip.format.id not in [vs.RGBS, vs.GRAYS]:
+            raise vs.Error('DPIR: only RGBS and GRAYS formats are supported')
 
-    task = task.lower()
-
-    if task not in ['deblock', 'denoise']:
-        raise vs.Error("dpir: task must be 'deblock' or 'denoise'")
-
-    if gpu_id is not None and (gpu_id < 0 or gpu_id >= ncnn.get_gpu_count()):
-        raise vs.Error('dpir: invalid GPU device')
-
-    if osp.getsize(osp.join(dir_name, 'drunet_color.bin')) == 0:
-        raise vs.Error("dpir: model files have not been downloaded. run 'python -m vsdpir_ncnn' first")
-
-    color_or_gray = 'color' if clip.format.color_family == vs.RGB else 'gray'
-
-    if task == 'deblock':
         if isinstance(strength, vs.VideoNode):
-            noise_level = strength.std.Expr(expr='x 100 /', format=vs.GRAYS)
+            if strength.format.id not in [vs.GRAY8, vs.GRAYS]:
+                raise vs.Error('DPIR: strength must be of GRAY8/GRAYS format')
+
+            if strength.width != clip.width or strength.height != clip.height or strength.num_frames != clip.num_frames:
+                raise vs.Error('DPIR: strength must have the same dimensions and number of frames as main clip')
+
+        if self.task == 'deblock':
+            if isinstance(strength, vs.VideoNode):
+                noise_level = strength.std.Expr(expr='x 100 /', format=vs.GRAYS)
+            else:
+                noise_level = clip.std.BlankClip(format=vs.GRAYS, color=fallback(strength, 50.0) / 100)
+            clip = clip.std.Limiter()
         else:
-            noise_level = clip.std.BlankClip(format=vs.GRAYS, color=fallback(strength, 50.0) / 100)
-        model_name = f'drunet_deblocking_{color_or_gray}'
-        clip = clip.std.Limiter()
-    else:
-        if isinstance(strength, vs.VideoNode):
-            noise_level = strength.std.Expr(expr='x 255 /', format=vs.GRAYS)
-        else:
-            noise_level = clip.std.BlankClip(format=vs.GRAYS, color=fallback(strength, 5.0) / 255)
-        model_name = f'drunet_{color_or_gray}'
+            if isinstance(strength, vs.VideoNode):
+                noise_level = strength.std.Expr(expr='x 255 /', format=vs.GRAYS)
+            else:
+                noise_level = clip.std.BlankClip(format=vs.GRAYS, color=fallback(strength, 5.0) / 255)
 
-    model_path = osp.join(dir_name, model_name)
+        def _dpir(n: int, f: list[vs.VideoFrame]) -> vs.VideoFrame:
+            img = frame_to_ndarray(f[0])
+            noise_level_map = frame_to_ndarray(f[1])
+            img = np.concatenate((img, noise_level_map))
 
-    vkdev = ncnn.get_gpu_device(fallback(gpu_id, ncnn.get_default_gpu_index()))
+            if tile_w > 0 and tile_h > 0:
+                output = tile_process(img, tile_w, tile_h, tile_pad, self.net)
+            elif img.shape[1] % 8 == 0 and img.shape[2] % 8 == 0:
+                ex = self.net.create_extractor()
+                ex.input('input', ncnn.Mat(img))
+                _, out = ex.extract('output')
+                output = np.asarray(out)
+            else:
+                output = mod_pad(img, 8, self.net)
 
-    net = ncnn.Net()
-    net.opt.num_threads = 1
-    net.opt.use_fp16_packed = fp16
-    net.opt.use_fp16_storage = fp16
-    net.opt.use_vulkan_compute = True
-    net.set_vulkan_device(vkdev)
-    net.load_param(model_path + '.param')
-    net.load_model(model_path + '.bin')
+            return ndarray_to_frame(output, f[0].copy())
 
-    def _dpir(n: int, f: list[vs.VideoFrame]) -> vs.VideoFrame:
-        img = frame_to_ndarray(f[0])
-        noise_level_map = frame_to_ndarray(f[1])
-        img = np.concatenate((img, noise_level_map))
-
-        if tile_w > 0 and tile_h > 0:
-            output = tile_process(img, tile_w, tile_h, tile_pad, net)
-        elif img.shape[1] % 8 == 0 and img.shape[2] % 8 == 0:
-            ex = net.create_extractor()
-            ex.input('input', ncnn.Mat(img))
-            _, out = ex.extract('output')
-            output = np.asarray(out)
-        else:
-            output = mod_pad(img, 8, net)
-
-        return ndarray_to_frame(output, f[0].copy())
-
-    return clip.std.ModifyFrame(clips=[clip, noise_level], selector=_dpir)
+        return clip.std.ModifyFrame(clips=[clip, noise_level], selector=_dpir)
 
 
 def frame_to_ndarray(frame: vs.VideoFrame) -> np.ndarray:
